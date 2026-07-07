@@ -2,7 +2,12 @@ import os
 import json
 from openai import OpenAI
 
-OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+def get_model() -> str:
+    try:
+        import streamlit as st
+        return st.session_state.get("chat_model") or os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+    except Exception:
+        return os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 from src.vector_store import search
 from src.summaries import THEMES
 import random
@@ -18,7 +23,7 @@ def generate_exam(openai_api_key: str, n_questions: int = 20) -> list[dict]:
         context = "\n\n".join(context_chunks)
 
         response = client.chat.completions.create(
-            model=OPENAI_MODEL,
+            model=get_model(),
             messages=[
                 {
                     "role": "system",
