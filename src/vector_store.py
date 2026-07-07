@@ -10,7 +10,7 @@ def get_collection(openai_api_key: str):
     client = chromadb.PersistentClient(path=DB_PATH)
     ef = embedding_functions.OpenAIEmbeddingFunction(
         api_key=openai_api_key,
-        model_name="text-embedding-3-small",
+        model_name="text-embedding-ada-002",
     )
     return client.get_or_create_collection(name=COLLECTION_NAME, embedding_function=ef)
 

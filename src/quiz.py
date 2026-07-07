@@ -1,5 +1,8 @@
+import os
 import json
 from openai import OpenAI
+
+OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 from src.vector_store import search
 from src.summaries import THEMES
 import random
@@ -15,7 +18,7 @@ def generate_exam(openai_api_key: str, n_questions: int = 20) -> list[dict]:
         context = "\n\n".join(context_chunks)
 
         response = client.chat.completions.create(
-            model="gpt-4o-mini",
+            model=OPENAI_MODEL,
             messages=[
                 {
                     "role": "system",

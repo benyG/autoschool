@@ -1,5 +1,8 @@
+import os
 import sqlite3
 import json
+
+OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 from datetime import date, timedelta
 from openai import OpenAI
 from src.vector_store import search
@@ -78,7 +81,7 @@ def generate_flashcards(theme: str, openai_api_key: str, count: int = 8) -> list
     context = "\n\n".join(context_chunks)
 
     response = client.chat.completions.create(
-        model="gpt-4o-mini",
+        model=OPENAI_MODEL,
         messages=[
             {
                 "role": "system",
