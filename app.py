@@ -15,9 +15,13 @@ st.set_page_config(
 # ── Styles ────────────────────────────────────────────────────────────────────
 st.markdown("""
 <style>
-.stApp { background-color: #f8f9fa; }
-.card { background: white; border-radius: 12px; padding: 1.5rem;
-        box-shadow: 0 2px 8px rgba(0,0,0,0.08); margin-bottom: 1rem; }
+.card {
+    background: var(--background-color, rgba(255,255,255,0.05));
+    border: 1px solid rgba(128,128,128,0.2);
+    border-radius: 12px;
+    padding: 1.5rem;
+    margin-bottom: 1rem;
+}
 .score-pass { color: #28a745; font-size: 2rem; font-weight: bold; }
 .score-fail { color: #dc3545; font-size: 2rem; font-weight: bold; }
 </style>
