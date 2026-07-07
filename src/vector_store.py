@@ -1,6 +1,9 @@
+import os
 import chromadb
 from chromadb.utils import embedding_functions
 from pathlib import Path
+
+EMBEDDING_MODEL = os.getenv("OPENAI_EMBEDDING_MODEL", "text-embedding-3-small")
 
 COLLECTION_NAME = "autoschool_docs"
 DB_PATH = "data/chroma"
@@ -10,7 +13,7 @@ def get_collection(openai_api_key: str):
     client = chromadb.PersistentClient(path=DB_PATH)
     ef = embedding_functions.OpenAIEmbeddingFunction(
         api_key=openai_api_key,
-        model_name="text-embedding-ada-002",
+        model_name=EMBEDDING_MODEL,
     )
     return client.get_or_create_collection(name=COLLECTION_NAME, embedding_function=ef)
 
