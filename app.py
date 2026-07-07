@@ -57,6 +57,26 @@ with st.sidebar:
             st.success("Clé enregistrée !")
 
     st.markdown("---")
+    st.subheader("🤖 Modèles OpenAI")
+    chat_model = st.text_input(
+        "Modèle de chat",
+        value=st.session_state.get("chat_model", os.getenv("OPENAI_MODEL", "")),
+        placeholder="ex: gpt-4o-mini, gpt-4o, gpt-3.5-turbo…",
+        key="chat_model_input",
+    )
+    if chat_model:
+        st.session_state["chat_model"] = chat_model
+
+    embed_model = st.text_input(
+        "Modèle d'embedding",
+        value=st.session_state.get("embed_model", os.getenv("OPENAI_EMBEDDING_MODEL", "")),
+        placeholder="ex: text-embedding-3-small, text-embedding-3-large…",
+        key="embed_model_input",
+    )
+    if embed_model:
+        st.session_state["embed_model"] = embed_model
+
+    st.markdown("---")
     page = st.radio(
         "Navigation",
         ["🏠 Accueil", "📚 Fiches thématiques", "🃏 Flashcards", "📝 Simulateur d'examen"],
