@@ -1,5 +1,8 @@
+import os
 from openai import OpenAI
 from src.vector_store import search
+
+OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 
 THEMES = [
     "Panneaux de signalisation",
@@ -23,7 +26,7 @@ def generate_summary(theme: str, openai_api_key: str) -> str:
     context = "\n\n".join(context_chunks)
 
     response = client.chat.completions.create(
-        model="gpt-4o-mini",
+        model=OPENAI_MODEL,
         messages=[
             {
                 "role": "system",
