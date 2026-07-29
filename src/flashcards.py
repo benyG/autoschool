@@ -1,13 +1,7 @@
-import os
 import sqlite3
 import json
 
-def get_model() -> str:
-    try:
-        import streamlit as st
-        return st.session_state.get("chat_model") or os.getenv("OPENAI_MODEL", "gpt-4o-mini")
-    except Exception:
-        return os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+from src.models import get_chat_model
 from datetime import date, timedelta
 from openai import OpenAI
 from src.vector_store import search
@@ -86,7 +80,7 @@ def generate_flashcards(theme: str, openai_api_key: str, count: int = 8) -> list
     context = "\n\n".join(context_chunks)
 
     response = client.chat.completions.create(
-        model=get_model(),
+        model=get_chat_model(),
         messages=[
             {
                 "role": "system",

@@ -2,6 +2,8 @@ from openai import OpenAI
 import tempfile
 import os
 
+from src.models import get_tts_model
+
 
 def text_to_speech(text: str, openai_api_key: str, voice: str = "nova") -> str:
     """Generate TTS audio and return path to temporary MP3 file."""
@@ -11,7 +13,7 @@ def text_to_speech(text: str, openai_api_key: str, voice: str = "nova") -> str:
     text = text[:4000]
 
     response = client.audio.speech.create(
-        model="tts-1",
+        model=get_tts_model(),
         voice=voice,
         input=text,
     )

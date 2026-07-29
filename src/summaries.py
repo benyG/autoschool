@@ -1,13 +1,6 @@
-import os
 from openai import OpenAI
 from src.vector_store import search
-
-def get_model() -> str:
-    try:
-        import streamlit as st
-        return st.session_state.get("chat_model") or os.getenv("OPENAI_MODEL", "gpt-4o-mini")
-    except Exception:
-        return os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+from src.models import get_chat_model
 
 THEMES = [
     "Panneaux de signalisation",
@@ -31,7 +24,7 @@ def generate_summary(theme: str, openai_api_key: str) -> str:
     context = "\n\n".join(context_chunks)
 
     response = client.chat.completions.create(
-        model=get_model(),
+        model=get_chat_model(),
         messages=[
             {
                 "role": "system",
