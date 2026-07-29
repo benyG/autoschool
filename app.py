@@ -221,7 +221,8 @@ elif page == "📚 Fiches thématiques":
 
     if cache_key in st.session_state:
         summary_text = st.session_state[cache_key]
-        st.markdown(f"""<div class="card">{summary_text}</div>""", unsafe_allow_html=True)
+        with st.container(border=True):
+            st.markdown(summary_text)
 
         if read_aloud:
             try:
