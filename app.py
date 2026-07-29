@@ -44,6 +44,16 @@ def require_api_key() -> str | None:
     return key
 
 
+def require_chat_model() -> bool:
+    from src.models import get_chat_model, ModelNotConfigured
+    try:
+        get_chat_model()
+        return True
+    except ModelNotConfigured as e:
+        st.warning(str(e))
+        return False
+
+
 # ── Sidebar ───────────────────────────────────────────────────────────────────
 with st.sidebar:
     st.title("🚗 AutoÉcole QC")
@@ -58,23 +68,55 @@ with st.sidebar:
 
     st.markdown("---")
     st.subheader("🤖 Modèles OpenAI")
-    chat_model = st.text_input(
-        "Modèle de chat",
-        value=st.session_state.get("chat_model", os.getenv("OPENAI_MODEL", "")),
-        placeholder="ex: gpt-4o-mini, gpt-4o, gpt-3.5-turbo…",
-        key="chat_model_input",
-    )
-    if chat_model:
-        st.session_state["chat_model"] = chat_model
 
-    embed_model = st.text_input(
-        "Modèle d'embedding",
-        value=st.session_state.get("embed_model", os.getenv("OPENAI_EMBEDDING_MODEL", "")),
-        placeholder="ex: text-embedding-3-small, text-embedding-3-large…",
-        key="embed_model_input",
-    )
-    if embed_model:
-        st.session_state["embed_model"] = embed_model
+    api_key = get_api_key()
+    if not api_key:
+        st.caption("Entrez votre clé pour voir les modèles disponibles.")
+    else:
+        if "available_models" not in st.session_state:
+            with st.spinner("Lecture des modèles disponibles…"):
+                try:
+                    from src.models import list_available_models
+                    st.session_state["available_models"] = list_available_models(api_key)
+                except Exception as e:
+                    st.session_state["available_models"] = ([], [])
+                    st.error(f"Impossible de lister les modèles : {e}")
+
+        chat_options, embed_options = st.session_state["available_models"]
+
+        def _index_of(options, key, env_key):
+            current = st.session_state.get(key) or os.getenv(env_key, "")
+            return options.index(current) if current in options else None
+
+        if chat_options:
+            choice = st.selectbox(
+                "Modèle de chat",
+                chat_options,
+                index=_index_of(chat_options, "chat_model", "OPENAI_MODEL"),
+                placeholder="Choisissez un modèle…",
+            )
+            if choice:
+                st.session_state["chat_model"] = choice
+
+        if embed_options:
+            previous = st.session_state.get("embed_model")
+            choice = st.selectbox(
+                "Modèle d'embedding",
+                embed_options,
+                index=_index_of(embed_options, "embed_model", "OPENAI_EMBEDDING_MODEL"),
+                placeholder="Choisissez un modèle…",
+            )
+            if choice:
+                st.session_state["embed_model"] = choice
+                if previous and previous != choice:
+                    st.warning(
+                        "Le modèle d'embedding a changé : réindexez les documents "
+                        "(bouton « Réinitialiser l'index » ci-dessous)."
+                    )
+
+        if st.button("🔄 Rafraîchir la liste", use_container_width=True):
+            st.session_state.pop("available_models", None)
+            st.rerun()
 
     st.markdown("---")
     page = st.radio(
@@ -86,21 +128,26 @@ with st.sidebar:
     # Index status
     st.markdown("---")
     st.subheader("⚙️ Base de documents")
-    api_key = get_api_key()
     if api_key:
-        from src.vector_store import is_indexed
+        from src.vector_store import is_indexed, reset_index
         if is_indexed(api_key):
             st.success("Documents indexés ✓")
+            if st.button("♻️ Réinitialiser l'index", use_container_width=True):
+                reset_index()
+                st.rerun()
         else:
             st.info("Documents non indexés")
-            if st.button("Indexer les PDFs", use_container_width=True):
-                with st.spinner("Extraction et indexation en cours…"):
-                    from src.pdf_parser import load_all_docs
-                    from src.vector_store import index_chunks
-                    _, chunks = load_all_docs("doc")
-                    index_chunks(chunks, api_key)
-                st.success(f"Indexé ({len(chunks)} passages)")
-                st.rerun()
+            if st.button("Indexer les PDFs", use_container_width=True, type="primary"):
+                try:
+                    with st.spinner("Extraction et indexation en cours…"):
+                        from src.pdf_parser import load_all_docs
+                        from src.vector_store import index_chunks
+                        _, chunks = load_all_docs("doc")
+                        index_chunks(chunks, api_key)
+                    st.success(f"Indexé ({len(chunks)} passages)")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Échec de l'indexation : {e}")
 
 
 # ── Pages ─────────────────────────────────────────────────────────────────────
@@ -138,17 +185,32 @@ if page == "🏠 Accueil":
 elif page == "📚 Fiches thématiques":
     st.title("📚 Fiches thématiques")
     api_key = require_api_key()
-    if not api_key:
+    if not api_key or not require_chat_model():
         st.stop()
 
     from src.summaries import THEMES, generate_summary
     from src.tts import text_to_speech, cleanup_audio
 
-    col1, col2 = st.columns([2, 1])
+    col1, col2, col3 = st.columns([2, 1, 1])
     with col1:
         theme = st.selectbox("Choisissez un thème", THEMES)
     with col2:
         voice = st.selectbox("Voix TTS", ["nova", "alloy", "echo", "fable", "onyx", "shimmer"])
+    with col3:
+        if "tts_models" not in st.session_state:
+            from src.models import list_tts_models
+            try:
+                st.session_state["tts_models"] = list_tts_models(api_key)
+            except Exception:
+                st.session_state["tts_models"] = []
+        tts_options = st.session_state["tts_models"]
+        tts_choice = st.selectbox(
+            "Modèle TTS",
+            tts_options or ["(aucun disponible)"],
+            disabled=not tts_options,
+        )
+        if tts_options:
+            st.session_state["tts_model"] = tts_choice
 
     col_gen, col_tts = st.columns(2)
     generate = col_gen.button("📖 Générer la fiche", use_container_width=True, type="primary")
@@ -170,18 +232,21 @@ elif page == "📚 Fiches thématiques":
         st.markdown(f"""<div class="card">{summary_text}</div>""", unsafe_allow_html=True)
 
         if read_aloud:
-            with st.spinner("Synthèse vocale en cours…"):
-                audio_path = text_to_speech(summary_text, api_key, voice=voice)
-            with open(audio_path, "rb") as f:
-                st.audio(f.read(), format="audio/mp3")
-            cleanup_audio(audio_path)
+            try:
+                with st.spinner("Synthèse vocale en cours…"):
+                    audio_path = text_to_speech(summary_text, api_key, voice=voice)
+                with open(audio_path, "rb") as f:
+                    st.audio(f.read(), format="audio/mp3")
+                cleanup_audio(audio_path)
+            except Exception as e:
+                st.error(f"Synthèse vocale indisponible : {e}")
 
 
 # FLASHCARDS
 elif page == "🃏 Flashcards":
     st.title("🃏 Flashcards — Répétition espacée")
     api_key = require_api_key()
-    if not api_key:
+    if not api_key or not require_chat_model():
         st.stop()
 
     from src.flashcards import (
@@ -272,7 +337,7 @@ elif page == "🃏 Flashcards":
 elif page == "📝 Simulateur d'examen":
     st.title("📝 Simulateur d'examen SAAQ")
     api_key = require_api_key()
-    if not api_key:
+    if not api_key or not require_chat_model():
         st.stop()
 
     from src.quiz import generate_exam, evaluate_exam

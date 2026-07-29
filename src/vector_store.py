@@ -1,14 +1,6 @@
-import os
 import chromadb
 from chromadb.utils import embedding_functions
-from pathlib import Path
-
-def get_embedding_model() -> str:
-    try:
-        import streamlit as st
-        return st.session_state.get("embed_model") or os.getenv("OPENAI_EMBEDDING_MODEL", "text-embedding-3-small")
-    except Exception:
-        return os.getenv("OPENAI_EMBEDDING_MODEL", "text-embedding-3-small")
+from src.models import get_embedding_model
 
 COLLECTION_NAME = "autoschool_docs"
 DB_PATH = "data/chroma"
