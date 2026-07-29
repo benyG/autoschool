@@ -3,10 +3,6 @@ import os
 from openai import OpenAI
 
 
-class ModelNotConfigured(RuntimeError):
-    """Aucun modèle sélectionné : l'utilisateur doit en choisir un dans la sidebar."""
-
-
 def list_available_models(api_key: str) -> tuple[list[str], list[str]]:
     """Retourne (modèles de chat, modèles d'embedding) accessibles par ce projet."""
     client = OpenAI(api_key=api_key)
@@ -27,28 +23,29 @@ def list_tts_models(api_key: str) -> list[str]:
     return [m for m in ids if "tts" in m or "audio-preview" in m]
 
 
-def _selected(session_key: str, env_key: str) -> str:
+# Modèles utilisés si rien n'est choisi dans la sidebar ni défini dans le .env
+DEFAULT_CHAT_MODEL = "gpt-5.4-mini"
+DEFAULT_EMBEDDING_MODEL = "text-embedding-3-small"
+DEFAULT_TTS_MODEL = "tts-1"
+
+
+def _selected(session_key: str, env_key: str, default: str) -> str:
     value = os.getenv(env_key, "")
     try:
         import streamlit as st
         value = st.session_state.get(session_key) or value
     except Exception:
         pass
-    if not value:
-        raise ModelNotConfigured(
-            f"Aucun modèle sélectionné. Choisissez-en un dans la barre latérale "
-            f"(ou définissez {env_key} dans votre .env)."
-        )
-    return value
+    return value or default
 
 
 def get_chat_model() -> str:
-    return _selected("chat_model", "OPENAI_MODEL")
+    return _selected("chat_model", "OPENAI_MODEL", DEFAULT_CHAT_MODEL)
 
 
 def get_embedding_model() -> str:
-    return _selected("embed_model", "OPENAI_EMBEDDING_MODEL")
+    return _selected("embed_model", "OPENAI_EMBEDDING_MODEL", DEFAULT_EMBEDDING_MODEL)
 
 
 def get_tts_model() -> str:
-    return _selected("tts_model", "OPENAI_TTS_MODEL")
+    return _selected("tts_model", "OPENAI_TTS_MODEL", DEFAULT_TTS_MODEL)

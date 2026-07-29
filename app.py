@@ -44,16 +44,6 @@ def require_api_key() -> str | None:
     return key
 
 
-def require_chat_model() -> bool:
-    from src.models import get_chat_model, ModelNotConfigured
-    try:
-        get_chat_model()
-        return True
-    except ModelNotConfigured as e:
-        st.warning(str(e))
-        return False
-
-
 # ── Sidebar ───────────────────────────────────────────────────────────────────
 with st.sidebar:
     st.title("🚗 AutoÉcole QC")
@@ -84,15 +74,17 @@ with st.sidebar:
 
         chat_options, embed_options = st.session_state["available_models"]
 
-        def _index_of(options, key, env_key):
-            current = st.session_state.get(key) or os.getenv(env_key, "")
+        def _index_of(options, key, env_key, default):
+            current = st.session_state.get(key) or os.getenv(env_key, "") or default
             return options.index(current) if current in options else None
+
+        from src.models import DEFAULT_CHAT_MODEL, DEFAULT_EMBEDDING_MODEL
 
         if chat_options:
             choice = st.selectbox(
                 "Modèle de chat",
                 chat_options,
-                index=_index_of(chat_options, "chat_model", "OPENAI_MODEL"),
+                index=_index_of(chat_options, "chat_model", "OPENAI_MODEL", DEFAULT_CHAT_MODEL),
                 placeholder="Choisissez un modèle…",
             )
             if choice:
@@ -103,7 +95,7 @@ with st.sidebar:
             choice = st.selectbox(
                 "Modèle d'embedding",
                 embed_options,
-                index=_index_of(embed_options, "embed_model", "OPENAI_EMBEDDING_MODEL"),
+                index=_index_of(embed_options, "embed_model", "OPENAI_EMBEDDING_MODEL", DEFAULT_EMBEDDING_MODEL),
                 placeholder="Choisissez un modèle…",
             )
             if choice:
@@ -185,7 +177,7 @@ if page == "🏠 Accueil":
 elif page == "📚 Fiches thématiques":
     st.title("📚 Fiches thématiques")
     api_key = require_api_key()
-    if not api_key or not require_chat_model():
+    if not api_key:
         st.stop()
 
     from src.summaries import THEMES, generate_summary
@@ -246,7 +238,7 @@ elif page == "📚 Fiches thématiques":
 elif page == "🃏 Flashcards":
     st.title("🃏 Flashcards — Répétition espacée")
     api_key = require_api_key()
-    if not api_key or not require_chat_model():
+    if not api_key:
         st.stop()
 
     from src.flashcards import (
@@ -337,7 +329,7 @@ elif page == "🃏 Flashcards":
 elif page == "📝 Simulateur d'examen":
     st.title("📝 Simulateur d'examen SAAQ")
     api_key = require_api_key()
-    if not api_key or not require_chat_model():
+    if not api_key:
         st.stop()
 
     from src.quiz import generate_exam, evaluate_exam
