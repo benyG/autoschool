@@ -113,7 +113,8 @@ with st.sidebar:
     st.markdown("---")
     page = st.radio(
         "Navigation",
-        ["🏠 Accueil", "📚 Fiches thématiques", "🃏 Flashcards", "📝 Simulateur d'examen"],
+        ["🏠 Accueil", "📚 Fiches thématiques", "🎧 Bibliothèque audio",
+         "🃏 Flashcards", "📝 Simulateur d'examen"],
         label_visibility="collapsed",
     )
 
@@ -181,7 +182,8 @@ elif page == "📚 Fiches thématiques":
         st.stop()
 
     from src.summaries import THEMES, generate_summary
-    from src.tts import text_to_speech, cleanup_audio
+    from src.tts import text_to_speech
+    from src.library import save_summary, get_latest_summary, list_audios
 
     col1, col2, col3 = st.columns([2, 1, 1])
     with col1:
@@ -204,35 +206,134 @@ elif page == "📚 Fiches thématiques":
         if tts_options:
             st.session_state["tts_model"] = tts_choice
 
-    col_gen, col_tts = st.columns(2)
-    generate = col_gen.button("📖 Générer la fiche", use_container_width=True, type="primary")
-    read_aloud = col_tts.button("🔊 Lire à voix haute", use_container_width=True)
+    # La fiche archivée sert de point de départ : rien n'est perdu entre deux sessions.
+    stored = get_latest_summary(theme)
+    if stored:
+        st.caption(f"Fiche enregistrée le {stored['created_at'].replace('T', ' à ')}")
 
-    cache_key = f"summary_{theme}"
+    col_gen, col_tts = st.columns(2)
+    label = "🔄 Régénérer la fiche" if stored else "📖 Générer la fiche"
+    generate = col_gen.button(label, use_container_width=True, type="primary")
+    read_aloud = col_tts.button("🔊 Écouter", use_container_width=True, disabled=not stored)
 
     if generate:
         from src.vector_store import is_indexed
         if not is_indexed(api_key):
             st.error("Indexez d'abord les PDFs (barre latérale).")
             st.stop()
-        with st.spinner(f"Génération de la fiche '{theme}'…"):
-            summary = generate_summary(theme, api_key)
-            st.session_state[cache_key] = summary
+        try:
+            with st.spinner(f"Analyse des enjeux d'examen puis rédaction — « {theme} »…"):
+                summary, points = generate_summary(theme, api_key)
+            save_summary(theme, summary, st.session_state.get("chat_model", ""))
+            st.session_state[f"points_{theme}"] = points
+            st.rerun()
+        except Exception as e:
+            st.error(f"Génération impossible : {e}")
 
-    if cache_key in st.session_state:
-        summary_text = st.session_state[cache_key]
+    if stored:
+        summary_text = stored["content"]
+
+        points = st.session_state.get(f"points_{theme}", [])
+        if points:
+            counts = {n: sum(1 for p in points if p.get("criticite") == n)
+                      for n in ("critique", "important", "secondaire")}
+            c1, c2, c3 = st.columns(3)
+            c1.metric("🔴 Points critiques", counts["critique"])
+            c2.metric("🟠 Points importants", counts["important"])
+            c3.metric("⚪ Bon à savoir", counts["secondaire"])
+
         with st.container(border=True):
             st.markdown(summary_text)
 
         if read_aloud:
             try:
-                with st.spinner("Synthèse vocale en cours…"):
-                    audio_path = text_to_speech(summary_text, api_key, voice=voice)
-                with open(audio_path, "rb") as f:
-                    st.audio(f.read(), format="audio/mp3")
-                cleanup_audio(audio_path)
+                with st.spinner("Préparation de l'audio…"):
+                    audio = text_to_speech(summary_text, api_key, voice=voice, theme=theme)
+                st.session_state[f"audio_{theme}"] = audio
             except Exception as e:
                 st.error(f"Synthèse vocale indisponible : {e}")
+
+        # Audios déjà archivés pour ce thème (toutes voix confondues).
+        archived = list_audios(theme)
+        current = st.session_state.get(f"audio_{theme}")
+        to_play = current or (archived[0] if archived else None)
+
+        if to_play:
+            st.markdown("#### 🎧 Écoute")
+            with open(to_play["path"], "rb") as f:
+                data = f.read()
+            st.audio(data, format="audio/mp3")
+            meta = st.columns([3, 1])
+            meta[0].caption(
+                f"Voix **{to_play['voice']}** · {to_play['model']} · "
+                f"{to_play['size_bytes'] / 1_000_000:.1f} Mo · "
+                f"généré le {to_play['created_at'].replace('T', ' à ')}"
+            )
+            meta[1].download_button(
+                "⬇️ Télécharger",
+                data,
+                file_name=f"{theme.replace(' ', '_')}_{to_play['voice']}.mp3",
+                mime="audio/mpeg",
+                use_container_width=True,
+            )
+            if len(archived) > 1:
+                st.caption(
+                    f"{len(archived)} versions archivées pour ce thème — "
+                    "retrouve-les toutes dans la Bibliothèque audio."
+                )
+
+
+# BIBLIOTHÈQUE AUDIO
+elif page == "🎧 Bibliothèque audio":
+    st.title("🎧 Bibliothèque audio")
+    from src.library import list_audios, delete_audio, library_stats
+
+    stats = library_stats()
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Audios archivés", stats["audio_count"])
+    c2.metric("Espace occupé", f"{stats['audio_bytes'] / 1_000_000:.1f} Mo")
+    c3.metric("Fiches enregistrées", stats["summary_count"])
+
+    audios = list_audios()
+    if not audios:
+        st.info(
+            "Aucun audio pour l'instant. Génère une fiche puis clique sur « Écouter » : "
+            "le fichier sera conservé ici et réutilisé sans être régénéré."
+        )
+    else:
+        st.caption(
+            "Les fichiers sont dans `data/audio/`. Un même texte lu avec la même voix "
+            "réutilise l'audio existant plutôt que de le repayer."
+        )
+        themes = sorted({a["theme"] for a in audios})
+        chosen = st.multiselect("Filtrer par thème", themes, default=[])
+        shown = [a for a in audios if not chosen or a["theme"] in chosen]
+
+        for audio in shown:
+            with st.expander(
+                f"{audio['theme']} — voix {audio['voice']} "
+                f"({audio['created_at'].replace('T', ' à ')})"
+            ):
+                with open(audio["path"], "rb") as f:
+                    data = f.read()
+                st.audio(data, format="audio/mp3")
+                cols = st.columns([2, 1, 1])
+                cols[0].caption(
+                    f"{audio['model']} · {audio['size_bytes'] / 1_000_000:.1f} Mo"
+                )
+                cols[1].download_button(
+                    "⬇️ Télécharger",
+                    data,
+                    file_name=f"{audio['theme'].replace(' ', '_')}_{audio['voice']}.mp3",
+                    mime="audio/mpeg",
+                    use_container_width=True,
+                    key=f"dl_{audio['hash']}",
+                )
+                if cols[2].button(
+                    "🗑️ Supprimer", use_container_width=True, key=f"del_{audio['hash']}"
+                ):
+                    delete_audio(audio["hash"])
+                    st.rerun()
 
 
 # FLASHCARDS
