@@ -183,11 +183,22 @@ elif page == "📚 Fiches thématiques":
 
     from src.summaries import THEMES, generate_summary
     from src.tts import text_to_speech
-    from src.library import save_summary, get_latest_summary, list_audios
+    from src.library import (
+        save_summary, get_latest_summary, list_audios,
+        save_verification, get_verification,
+    )
+
+    from src.library import verification_statuses
+    statuts = verification_statuses()
+    _icones = {"conforme": "✅", "avertissement": "⚠️", "erreur": "⛔"}
 
     col1, col2, col3 = st.columns([2, 1, 1])
     with col1:
-        theme = st.selectbox("Choisissez un thème", THEMES)
+        theme = st.selectbox(
+            "Choisissez un thème",
+            THEMES,
+            format_func=lambda t: f"{_icones.get(statuts.get(t), '·')} {t}",
+        )
     with col2:
         voice = st.selectbox("Voix TTS", ["nova", "alloy", "echo", "fable", "onyx", "shimmer"])
     with col3:
@@ -211,10 +222,14 @@ elif page == "📚 Fiches thématiques":
     if stored:
         st.caption(f"Fiche enregistrée le {stored['created_at'].replace('T', ' à ')}")
 
-    col_gen, col_tts = st.columns(2)
+    col_gen, col_tts, col_check = st.columns(3)
     label = "🔄 Régénérer la fiche" if stored else "📖 Générer la fiche"
     generate = col_gen.button(label, use_container_width=True, type="primary")
     read_aloud = col_tts.button("🔊 Écouter", use_container_width=True, disabled=not stored)
+    check = col_check.button(
+        "🔍 Vérifier", use_container_width=True, disabled=not stored,
+        help="Recoupe les chiffres et les règles de la fiche avec le manuel officiel.",
+    )
 
     if generate:
         from src.vector_store import is_indexed
@@ -241,6 +256,62 @@ elif page == "📚 Fiches thématiques":
             c1.metric("🔴 Points critiques", counts["critique"])
             c2.metric("🟠 Points importants", counts["important"])
             c3.metric("⚪ Bon à savoir", counts["secondaire"])
+
+        if check:
+            try:
+                with st.spinner("Recoupement avec le manuel officiel…"):
+                    from src.verification import verify_summary
+                    report = verify_summary(summary_text, theme, api_key)
+                save_verification(stored["hash"], theme, report)
+                st.rerun()
+            except Exception as e:
+                st.error(f"Vérification impossible : {e}")
+
+        # Le rapport porte sur ce contenu précis : régénérer la fiche l'invalide.
+        report = get_verification(stored["hash"])
+        if report:
+            statut = report["statut"]
+            if statut == "erreur":
+                st.error(
+                    f"⛔ **{report['contredits']} affirmation(s) contredites par le "
+                    "manuel.** Ne révise pas cette fiche en l'état — régénère-la."
+                )
+            elif statut == "avertissement":
+                details = []
+                if report["chiffres_introuvables"]:
+                    details.append(f"{report['chiffres_introuvables']} chiffre(s) introuvables")
+                if report["absents"]:
+                    details.append(f"{report['absents']} règle(s) non retrouvées")
+                st.warning(f"⚠️ À confirmer : {', '.join(details)}.")
+            else:
+                st.success(
+                    f"✅ Fiche recoupée avec le manuel — "
+                    f"{report['chiffres_total']} chiffre(s) et {report['soutenus']} "
+                    "règle(s) confirmés."
+                )
+
+            with st.expander("Détail de la vérification"):
+                st.caption(f"Vérifiée le {report['verifie_le'].replace('T', ' à ')}")
+
+                if report["chiffres"]:
+                    st.markdown("**Chiffres**")
+                    for c in report["chiffres"]:
+                        icon = "✅" if c["presente_dans_le_manuel"] else "❓"
+                        st.markdown(f"{icon} `{c['valeur']}` — {c['extrait']}")
+                        if not c["presente_dans_le_manuel"]:
+                            st.caption("Cette valeur n'apparaît pas dans les extraits du manuel.")
+
+                if report["affirmations"]:
+                    st.markdown("**Règles**")
+                    icons = {"soutenu": "✅", "contredit": "⛔", "absent": "❓"}
+                    for a in report["affirmations"]:
+                        st.markdown(f"{icons.get(a['verdict'], '❓')} {a['affirmation']}")
+                        if a.get("justification"):
+                            st.caption(a["justification"])
+                        if a.get("passage_source"):
+                            st.caption(f"› Manuel : « {a['passage_source'][:300]} »")
+        elif stored:
+            st.caption("Fiche non vérifiée — clique sur « Vérifier » pour la recouper avec le manuel.")
 
         with st.container(border=True):
             st.markdown(summary_text)
@@ -452,9 +523,57 @@ elif page == "📝 Simulateur d'examen":
         - **Seuil de réussite : 80%** (comme la SAAQ)
         - Pas de limite de temps ici, mais travaillez vite !
         """)
+        verify = st.checkbox(
+            "🔍 Vérifier chaque question contre le manuel avant de commencer",
+            value=True,
+            help="Écarte les questions dont la bonne réponse n'est pas confirmée par "
+                 "le manuel. Plus lent, mais évite d'apprendre une erreur.",
+        )
+
         if st.button("🚀 Démarrer l'examen", use_container_width=True, type="primary"):
             with st.spinner("Génération de l'examen… (30-60 secondes)"):
                 questions = generate_exam(api_key, n_questions=20)
+
+            ecartees = []
+            if verify and questions:
+                from src.verification import verify_question
+                progress = st.progress(0.0, text="Vérification des questions…")
+                retenues = []
+                for i, q in enumerate(questions):
+                    try:
+                        verdict = verify_question(q, api_key)
+                    except Exception:
+                        # Un échec de vérification ne doit pas priver d'examen.
+                        retenues.append(q)
+                        progress.progress((i + 1) / len(questions))
+                        continue
+
+                    if verdict.get("verdict") == "mauvaise_reponse":
+                        # Le manuel désigne un autre choix : on corrige plutôt
+                        # que de jeter, si l'index proposé est exploitable.
+                        idx = verdict.get("index_correct_selon_manuel")
+                        if isinstance(idx, int) and 0 <= idx < len(q.get("choices", [])):
+                            q["correct_index"] = idx
+                            q["explanation"] = (
+                                verdict.get("justification") or q.get("explanation", "")
+                            )
+                            retenues.append(q)
+                        else:
+                            ecartees.append(q)
+                    else:
+                        retenues.append(q)
+                    progress.progress((i + 1) / len(questions))
+                progress.empty()
+                questions = retenues
+
+            if not questions:
+                st.error(
+                    "Aucune question n'a pu être validée contre le manuel. "
+                    "Vérifie que l'index couvre bien ce contenu, puis réessaie."
+                )
+                st.stop()
+
+            st.session_state["exam_ecartees"] = len(ecartees)
             st.session_state["exam_questions"] = questions
             st.session_state["exam_answers"] = [-1] * len(questions)
             st.session_state["exam_state"] = "in_progress"
@@ -463,6 +582,13 @@ elif page == "📝 Simulateur d'examen":
     elif state == "in_progress":
         questions = st.session_state["exam_questions"]
         answers = st.session_state["exam_answers"]
+
+        ecartees = st.session_state.get("exam_ecartees", 0)
+        if ecartees:
+            st.info(
+                f"{ecartees} question(s) écartée(s) : le manuel ne confirmait pas "
+                f"leur réponse. L'examen en compte {len(questions)}."
+            )
 
         answered = sum(1 for a in answers if a >= 0)
         st.progress(answered / len(questions), text=f"{answered}/{len(questions)} répondues")

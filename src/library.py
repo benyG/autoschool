@@ -4,6 +4,7 @@ Une fiche et son audio sont indexés par empreinte de contenu : régénérer
 exactement le même texte avec la même voix réutilise le MP3 déjà payé.
 """
 import hashlib
+import json
 import sqlite3
 from datetime import datetime
 from pathlib import Path
@@ -22,6 +23,15 @@ def init_db():
             model TEXT,
             content TEXT NOT NULL,
             content_hash TEXT NOT NULL UNIQUE,
+            created_at TEXT NOT NULL
+        )
+    """)
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS verifications (
+            content_hash TEXT PRIMARY KEY,
+            theme TEXT NOT NULL,
+            report TEXT NOT NULL,
+            statut TEXT NOT NULL,
             created_at TEXT NOT NULL
         )
     """)
@@ -88,6 +98,55 @@ def list_summaries() -> list[dict]:
     return [
         {"theme": r[0], "hash": r[1], "model": r[2], "created_at": r[3]} for r in rows
     ]
+
+
+# ── Rapports de vérification ──────────────────────────────────────────────────
+
+def save_verification(content_hash: str, theme: str, report: dict):
+    """Un rapport vaut pour un contenu donné : régénérer la fiche l'invalide."""
+    init_db()
+    con = sqlite3.connect(DB_PATH)
+    con.execute(
+        "INSERT OR REPLACE INTO verifications "
+        "(content_hash, theme, report, statut, created_at) VALUES (?, ?, ?, ?, ?)",
+        (
+            content_hash,
+            theme,
+            json.dumps(report, ensure_ascii=False),
+            report.get("statut", "inconnu"),
+            datetime.now().isoformat(timespec="seconds"),
+        ),
+    )
+    con.commit()
+    con.close()
+
+
+def get_verification(content_hash: str) -> dict | None:
+    init_db()
+    con = sqlite3.connect(DB_PATH)
+    row = con.execute(
+        "SELECT report, created_at FROM verifications WHERE content_hash = ?",
+        (content_hash,),
+    ).fetchone()
+    con.close()
+    if not row:
+        return None
+    report = json.loads(row[0])
+    report["verifie_le"] = row[1]
+    return report
+
+
+def verification_statuses() -> dict[str, str]:
+    """Statut de vérification de la dernière fiche de chaque thème."""
+    init_db()
+    con = sqlite3.connect(DB_PATH)
+    rows = con.execute("""
+        SELECT s.theme, v.statut FROM summaries s
+        JOIN verifications v ON v.content_hash = s.content_hash
+        WHERE s.id = (SELECT MAX(id) FROM summaries WHERE theme = s.theme)
+    """).fetchall()
+    con.close()
+    return {r[0]: r[1] for r in rows}
 
 
 # ── Audios ────────────────────────────────────────────────────────────────────
