@@ -113,7 +113,8 @@ with st.sidebar:
     st.markdown("---")
     page = st.radio(
         "Navigation",
-        ["🏠 Accueil", "📚 Fiches thématiques", "🃏 Flashcards", "📝 Simulateur d'examen"],
+        ["🏠 Accueil", "📚 Fiches thématiques", "🎧 Bibliothèque audio",
+         "🃏 Flashcards", "📝 Simulateur d'examen"],
         label_visibility="collapsed",
     )
 
@@ -181,11 +182,23 @@ elif page == "📚 Fiches thématiques":
         st.stop()
 
     from src.summaries import THEMES, generate_summary
-    from src.tts import text_to_speech, cleanup_audio
+    from src.tts import text_to_speech
+    from src.library import (
+        save_summary, get_latest_summary, list_audios,
+        save_verification, get_verification,
+    )
+
+    from src.library import verification_statuses
+    statuts = verification_statuses()
+    _icones = {"conforme": "✅", "avertissement": "⚠️", "erreur": "⛔"}
 
     col1, col2, col3 = st.columns([2, 1, 1])
     with col1:
-        theme = st.selectbox("Choisissez un thème", THEMES)
+        theme = st.selectbox(
+            "Choisissez un thème",
+            THEMES,
+            format_func=lambda t: f"{_icones.get(statuts.get(t), '·')} {t}",
+        )
     with col2:
         voice = st.selectbox("Voix TTS", ["nova", "alloy", "echo", "fable", "onyx", "shimmer"])
     with col3:
@@ -204,35 +217,194 @@ elif page == "📚 Fiches thématiques":
         if tts_options:
             st.session_state["tts_model"] = tts_choice
 
-    col_gen, col_tts = st.columns(2)
-    generate = col_gen.button("📖 Générer la fiche", use_container_width=True, type="primary")
-    read_aloud = col_tts.button("🔊 Lire à voix haute", use_container_width=True)
+    # La fiche archivée sert de point de départ : rien n'est perdu entre deux sessions.
+    stored = get_latest_summary(theme)
+    if stored:
+        st.caption(f"Fiche enregistrée le {stored['created_at'].replace('T', ' à ')}")
 
-    cache_key = f"summary_{theme}"
+    col_gen, col_tts, col_check = st.columns(3)
+    label = "🔄 Régénérer la fiche" if stored else "📖 Générer la fiche"
+    generate = col_gen.button(label, use_container_width=True, type="primary")
+    read_aloud = col_tts.button("🔊 Écouter", use_container_width=True, disabled=not stored)
+    check = col_check.button(
+        "🔍 Vérifier", use_container_width=True, disabled=not stored,
+        help="Recoupe les chiffres et les règles de la fiche avec le manuel officiel.",
+    )
 
     if generate:
         from src.vector_store import is_indexed
         if not is_indexed(api_key):
             st.error("Indexez d'abord les PDFs (barre latérale).")
             st.stop()
-        with st.spinner(f"Génération de la fiche '{theme}'…"):
-            summary = generate_summary(theme, api_key)
-            st.session_state[cache_key] = summary
+        try:
+            with st.spinner(f"Analyse des enjeux d'examen puis rédaction — « {theme} »…"):
+                summary, points = generate_summary(theme, api_key)
+            save_summary(theme, summary, st.session_state.get("chat_model", ""))
+            st.session_state[f"points_{theme}"] = points
+            st.rerun()
+        except Exception as e:
+            st.error(f"Génération impossible : {e}")
 
-    if cache_key in st.session_state:
-        summary_text = st.session_state[cache_key]
+    if stored:
+        summary_text = stored["content"]
+
+        points = st.session_state.get(f"points_{theme}", [])
+        if points:
+            counts = {n: sum(1 for p in points if p.get("criticite") == n)
+                      for n in ("critique", "important", "secondaire")}
+            c1, c2, c3 = st.columns(3)
+            c1.metric("🔴 Points critiques", counts["critique"])
+            c2.metric("🟠 Points importants", counts["important"])
+            c3.metric("⚪ Bon à savoir", counts["secondaire"])
+
+        if check:
+            try:
+                with st.spinner("Recoupement avec le manuel officiel…"):
+                    from src.verification import verify_summary
+                    report = verify_summary(summary_text, theme, api_key)
+                save_verification(stored["hash"], theme, report)
+                st.rerun()
+            except Exception as e:
+                st.error(f"Vérification impossible : {e}")
+
+        # Le rapport porte sur ce contenu précis : régénérer la fiche l'invalide.
+        report = get_verification(stored["hash"])
+        if report:
+            statut = report["statut"]
+            if statut == "erreur":
+                st.error(
+                    f"⛔ **{report['contredits']} affirmation(s) contredites par le "
+                    "manuel.** Ne révise pas cette fiche en l'état — régénère-la."
+                )
+            elif statut == "avertissement":
+                details = []
+                if report["chiffres_introuvables"]:
+                    details.append(f"{report['chiffres_introuvables']} chiffre(s) introuvables")
+                if report["absents"]:
+                    details.append(f"{report['absents']} règle(s) non retrouvées")
+                st.warning(f"⚠️ À confirmer : {', '.join(details)}.")
+            else:
+                st.success(
+                    f"✅ Fiche recoupée avec le manuel — "
+                    f"{report['chiffres_total']} chiffre(s) et {report['soutenus']} "
+                    "règle(s) confirmés."
+                )
+
+            with st.expander("Détail de la vérification"):
+                st.caption(f"Vérifiée le {report['verifie_le'].replace('T', ' à ')}")
+
+                if report["chiffres"]:
+                    st.markdown("**Chiffres**")
+                    for c in report["chiffres"]:
+                        icon = "✅" if c["presente_dans_le_manuel"] else "❓"
+                        st.markdown(f"{icon} `{c['valeur']}` — {c['extrait']}")
+                        if not c["presente_dans_le_manuel"]:
+                            st.caption("Cette valeur n'apparaît pas dans les extraits du manuel.")
+
+                if report["affirmations"]:
+                    st.markdown("**Règles**")
+                    icons = {"soutenu": "✅", "contredit": "⛔", "absent": "❓"}
+                    for a in report["affirmations"]:
+                        st.markdown(f"{icons.get(a['verdict'], '❓')} {a['affirmation']}")
+                        if a.get("justification"):
+                            st.caption(a["justification"])
+                        if a.get("passage_source"):
+                            st.caption(f"› Manuel : « {a['passage_source'][:300]} »")
+        elif stored:
+            st.caption("Fiche non vérifiée — clique sur « Vérifier » pour la recouper avec le manuel.")
+
         with st.container(border=True):
             st.markdown(summary_text)
 
         if read_aloud:
             try:
-                with st.spinner("Synthèse vocale en cours…"):
-                    audio_path = text_to_speech(summary_text, api_key, voice=voice)
-                with open(audio_path, "rb") as f:
-                    st.audio(f.read(), format="audio/mp3")
-                cleanup_audio(audio_path)
+                with st.spinner("Préparation de l'audio…"):
+                    audio = text_to_speech(summary_text, api_key, voice=voice, theme=theme)
+                st.session_state[f"audio_{theme}"] = audio
             except Exception as e:
                 st.error(f"Synthèse vocale indisponible : {e}")
+
+        # Audios déjà archivés pour ce thème (toutes voix confondues).
+        archived = list_audios(theme)
+        current = st.session_state.get(f"audio_{theme}")
+        to_play = current or (archived[0] if archived else None)
+
+        if to_play:
+            st.markdown("#### 🎧 Écoute")
+            with open(to_play["path"], "rb") as f:
+                data = f.read()
+            st.audio(data, format="audio/mp3")
+            meta = st.columns([3, 1])
+            meta[0].caption(
+                f"Voix **{to_play['voice']}** · {to_play['model']} · "
+                f"{to_play['size_bytes'] / 1_000_000:.1f} Mo · "
+                f"généré le {to_play['created_at'].replace('T', ' à ')}"
+            )
+            meta[1].download_button(
+                "⬇️ Télécharger",
+                data,
+                file_name=f"{theme.replace(' ', '_')}_{to_play['voice']}.mp3",
+                mime="audio/mpeg",
+                use_container_width=True,
+            )
+            if len(archived) > 1:
+                st.caption(
+                    f"{len(archived)} versions archivées pour ce thème — "
+                    "retrouve-les toutes dans la Bibliothèque audio."
+                )
+
+
+# BIBLIOTHÈQUE AUDIO
+elif page == "🎧 Bibliothèque audio":
+    st.title("🎧 Bibliothèque audio")
+    from src.library import list_audios, delete_audio, library_stats
+
+    stats = library_stats()
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Audios archivés", stats["audio_count"])
+    c2.metric("Espace occupé", f"{stats['audio_bytes'] / 1_000_000:.1f} Mo")
+    c3.metric("Fiches enregistrées", stats["summary_count"])
+
+    audios = list_audios()
+    if not audios:
+        st.info(
+            "Aucun audio pour l'instant. Génère une fiche puis clique sur « Écouter » : "
+            "le fichier sera conservé ici et réutilisé sans être régénéré."
+        )
+    else:
+        st.caption(
+            "Les fichiers sont dans `data/audio/`. Un même texte lu avec la même voix "
+            "réutilise l'audio existant plutôt que de le repayer."
+        )
+        themes = sorted({a["theme"] for a in audios})
+        chosen = st.multiselect("Filtrer par thème", themes, default=[])
+        shown = [a for a in audios if not chosen or a["theme"] in chosen]
+
+        for audio in shown:
+            with st.expander(
+                f"{audio['theme']} — voix {audio['voice']} "
+                f"({audio['created_at'].replace('T', ' à ')})"
+            ):
+                with open(audio["path"], "rb") as f:
+                    data = f.read()
+                st.audio(data, format="audio/mp3")
+                cols = st.columns([2, 1, 1])
+                cols[0].caption(
+                    f"{audio['model']} · {audio['size_bytes'] / 1_000_000:.1f} Mo"
+                )
+                cols[1].download_button(
+                    "⬇️ Télécharger",
+                    data,
+                    file_name=f"{audio['theme'].replace(' ', '_')}_{audio['voice']}.mp3",
+                    mime="audio/mpeg",
+                    use_container_width=True,
+                    key=f"dl_{audio['hash']}",
+                )
+                if cols[2].button(
+                    "🗑️ Supprimer", use_container_width=True, key=f"del_{audio['hash']}"
+                ):
+                    delete_audio(audio["hash"])
+                    st.rerun()
 
 
 # FLASHCARDS
@@ -351,9 +523,57 @@ elif page == "📝 Simulateur d'examen":
         - **Seuil de réussite : 80%** (comme la SAAQ)
         - Pas de limite de temps ici, mais travaillez vite !
         """)
+        verify = st.checkbox(
+            "🔍 Vérifier chaque question contre le manuel avant de commencer",
+            value=True,
+            help="Écarte les questions dont la bonne réponse n'est pas confirmée par "
+                 "le manuel. Plus lent, mais évite d'apprendre une erreur.",
+        )
+
         if st.button("🚀 Démarrer l'examen", use_container_width=True, type="primary"):
             with st.spinner("Génération de l'examen… (30-60 secondes)"):
                 questions = generate_exam(api_key, n_questions=20)
+
+            ecartees = []
+            if verify and questions:
+                from src.verification import verify_question
+                progress = st.progress(0.0, text="Vérification des questions…")
+                retenues = []
+                for i, q in enumerate(questions):
+                    try:
+                        verdict = verify_question(q, api_key)
+                    except Exception:
+                        # Un échec de vérification ne doit pas priver d'examen.
+                        retenues.append(q)
+                        progress.progress((i + 1) / len(questions))
+                        continue
+
+                    if verdict.get("verdict") == "mauvaise_reponse":
+                        # Le manuel désigne un autre choix : on corrige plutôt
+                        # que de jeter, si l'index proposé est exploitable.
+                        idx = verdict.get("index_correct_selon_manuel")
+                        if isinstance(idx, int) and 0 <= idx < len(q.get("choices", [])):
+                            q["correct_index"] = idx
+                            q["explanation"] = (
+                                verdict.get("justification") or q.get("explanation", "")
+                            )
+                            retenues.append(q)
+                        else:
+                            ecartees.append(q)
+                    else:
+                        retenues.append(q)
+                    progress.progress((i + 1) / len(questions))
+                progress.empty()
+                questions = retenues
+
+            if not questions:
+                st.error(
+                    "Aucune question n'a pu être validée contre le manuel. "
+                    "Vérifie que l'index couvre bien ce contenu, puis réessaie."
+                )
+                st.stop()
+
+            st.session_state["exam_ecartees"] = len(ecartees)
             st.session_state["exam_questions"] = questions
             st.session_state["exam_answers"] = [-1] * len(questions)
             st.session_state["exam_state"] = "in_progress"
@@ -362,6 +582,13 @@ elif page == "📝 Simulateur d'examen":
     elif state == "in_progress":
         questions = st.session_state["exam_questions"]
         answers = st.session_state["exam_answers"]
+
+        ecartees = st.session_state.get("exam_ecartees", 0)
+        if ecartees:
+            st.info(
+                f"{ecartees} question(s) écartée(s) : le manuel ne confirmait pas "
+                f"leur réponse. L'examen en compte {len(questions)}."
+            )
 
         answered = sum(1 for a in answers if a >= 0)
         st.progress(answered / len(questions), text=f"{answered}/{len(questions)} répondues")

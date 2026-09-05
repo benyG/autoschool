@@ -1,0 +1,11 @@
+# Secrets
+.env
+
+# Données locales : index vectoriel, progression SRS, audios générés
+data/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
