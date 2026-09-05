@@ -182,7 +182,7 @@ elif page == "📚 Fiches thématiques":
         st.stop()
 
     from src.summaries import THEMES, generate_summary
-    from src.tts import text_to_speech
+    from src.tts import text_to_speech, strip_markdown
     from src.library import (
         save_summary, get_latest_summary, list_audios,
         save_verification, get_verification,
@@ -318,8 +318,15 @@ elif page == "📚 Fiches thématiques":
 
         if read_aloud:
             try:
-                with st.spinner("Préparation de l'audio…"):
-                    audio = text_to_speech(summary_text, api_key, voice=voice, theme=theme)
+                bar = st.progress(0.0, text="Préparation de l'audio…")
+
+                def _avance(fait: int, total: int):
+                    bar.progress(fait / total, text=f"Synthèse — partie {fait}/{total}")
+
+                audio = text_to_speech(
+                    summary_text, api_key, voice=voice, theme=theme, on_progress=_avance
+                )
+                bar.empty()
                 st.session_state[f"audio_{theme}"] = audio
             except Exception as e:
                 st.error(f"Synthèse vocale indisponible : {e}")
@@ -330,21 +337,39 @@ elif page == "📚 Fiches thématiques":
         to_play = current or (archived[0] if archived else None)
 
         if to_play:
+            from src.audio import format_duration, mime_for
+            from pathlib import Path as _Path
+
             st.markdown("#### 🎧 Écoute")
             with open(to_play["path"], "rb") as f:
                 data = f.read()
-            st.audio(data, format="audio/mp3")
+            mime = mime_for(to_play["path"])
+            st.audio(data, format=mime)
+
+            # La piste doit couvrir tout le texte : on le vérifie au lieu de
+            # laisser l'élève s'en apercevoir en cours d'écoute.
+            duree = to_play.get("duration_seconds")
+            attendu = len(strip_markdown(summary_text)) / 15.0  # ~15 caractères/s
+            if duree and attendu and duree < attendu * 0.75:
+                st.warning(
+                    f"⚠️ Cette piste dure {format_duration(duree)} alors que le texte "
+                    f"en demande environ {format_duration(attendu)}. Elle date "
+                    "probablement d'une version antérieure — régénère-la."
+                )
+
             meta = st.columns([3, 1])
             meta[0].caption(
                 f"Voix **{to_play['voice']}** · {to_play['model']} · "
+                f"**{format_duration(duree)}** · "
                 f"{to_play['size_bytes'] / 1_000_000:.1f} Mo · "
                 f"généré le {to_play['created_at'].replace('T', ' à ')}"
             )
             meta[1].download_button(
                 "⬇️ Télécharger",
                 data,
-                file_name=f"{theme.replace(' ', '_')}_{to_play['voice']}.mp3",
-                mime="audio/mpeg",
+                file_name=f"{theme.replace(' ', '_')}_{to_play['voice']}"
+                          f"{_Path(to_play['path']).suffix}",
+                mime=mime,
                 use_container_width=True,
             )
             if len(archived) > 1:
@@ -358,12 +383,21 @@ elif page == "📚 Fiches thématiques":
 elif page == "🎧 Bibliothèque audio":
     st.title("🎧 Bibliothèque audio")
     from src.library import list_audios, delete_audio, library_stats
+    from src.audio import format_duration, mime_for, ffmpeg_available
 
     stats = library_stats()
-    c1, c2, c3 = st.columns(3)
+    c1, c2, c3, c4 = st.columns(4)
     c1.metric("Audios archivés", stats["audio_count"])
-    c2.metric("Espace occupé", f"{stats['audio_bytes'] / 1_000_000:.1f} Mo")
-    c3.metric("Fiches enregistrées", stats["summary_count"])
+    c2.metric("Écoute totale", format_duration(stats["audio_seconds"]))
+    c3.metric("Espace occupé", f"{stats['audio_bytes'] / 1_000_000:.1f} Mo")
+    c4.metric("Fiches enregistrées", stats["summary_count"])
+
+    if not ffmpeg_available():
+        st.caption(
+            "💡 Les pistes sont enregistrées en WAV (environ 3 Mo par minute). "
+            "Installer **ffmpeg** et le rendre accessible dans le PATH les fera "
+            "compresser automatiquement en MP3, dix fois plus légères."
+        )
 
     audios = list_audios()
     if not audios:
@@ -380,23 +414,29 @@ elif page == "🎧 Bibliothèque audio":
         chosen = st.multiselect("Filtrer par thème", themes, default=[])
         shown = [a for a in audios if not chosen or a["theme"] in chosen]
 
+        from pathlib import Path as _Path
+
         for audio in shown:
             with st.expander(
-                f"{audio['theme']} — voix {audio['voice']} "
+                f"{audio['theme']} — voix {audio['voice']} · "
+                f"{format_duration(audio.get('duration_seconds'))} "
                 f"({audio['created_at'].replace('T', ' à ')})"
             ):
                 with open(audio["path"], "rb") as f:
                     data = f.read()
-                st.audio(data, format="audio/mp3")
+                mime = mime_for(audio["path"])
+                st.audio(data, format=mime)
                 cols = st.columns([2, 1, 1])
                 cols[0].caption(
-                    f"{audio['model']} · {audio['size_bytes'] / 1_000_000:.1f} Mo"
+                    f"{audio['model']} · {audio['size_bytes'] / 1_000_000:.1f} Mo · "
+                    f"{_Path(audio['path']).suffix.lstrip('.').upper()}"
                 )
                 cols[1].download_button(
                     "⬇️ Télécharger",
                     data,
-                    file_name=f"{audio['theme'].replace(' ', '_')}_{audio['voice']}.mp3",
-                    mime="audio/mpeg",
+                    file_name=f"{audio['theme'].replace(' ', '_')}_{audio['voice']}"
+                              f"{_Path(audio['path']).suffix}",
+                    mime=mime,
                     use_container_width=True,
                     key=f"dl_{audio['hash']}",
                 )

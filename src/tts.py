@@ -1,8 +1,11 @@
+from collections.abc import Callable
+
 from openai import OpenAI
 import re
 
 from src.models import get_tts_model
 from src.library import AUDIO_DIR, audio_key, find_audio, register_audio
+from src.audio import pcm_to_wav, pcm_duration, wav_to_mp3
 
 # L'API TTS plafonne l'entrée : on découpe les textes longs plutôt que de les tronquer.
 MAX_CHARS = 3800
@@ -62,10 +65,14 @@ def text_to_speech(
     voice: str = "nova",
     theme: str = "",
     force: bool = False,
+    on_progress: Callable[[int, int], None] | None = None,
 ) -> dict:
     """Génère (ou récupère) l'audio d'une fiche et l'archive durablement.
 
-    Retourne le descriptif de l'audio archivé : chemin, voix, modèle, date.
+    La piste couvre l'intégralité du texte : les segments sont assemblés en PCM
+    puis écrits en un seul fichier dont l'en-tête déclare la durée réelle.
+
+    Retourne le descriptif de l'audio archivé : chemin, durée, voix, modèle.
     """
     spoken = strip_markdown(text)
     model = get_tts_model()
@@ -76,14 +83,40 @@ def text_to_speech(
         if existing:
             return existing
 
+    segments = split_for_tts(spoken)
     client = OpenAI(api_key=openai_api_key)
-    audio_bytes = b""
-    for segment in split_for_tts(spoken):
-        response = client.audio.speech.create(model=model, voice=voice, input=segment)
-        audio_bytes += response.content
+
+    # PCM brut : un flux sans en-tête, donc concaténable sans ambiguïté.
+    pcm = b""
+    for i, segment in enumerate(segments, start=1):
+        response = client.audio.speech.create(
+            model=model, voice=voice, input=segment, response_format="pcm"
+        )
+        chunk = response.content
+        if not chunk:
+            raise RuntimeError(
+                f"Le segment {i}/{len(segments)} n'a produit aucun son. "
+                "L'audio serait incomplet : rien n'a été enregistré."
+            )
+        pcm += chunk
+        if on_progress:
+            on_progress(i, len(segments))
+
+    duration = pcm_duration(pcm)
+    wav_bytes = pcm_to_wav(pcm)
+
+    # Le WAV pèse ~3 Mo par minute : on compresse si ffmpeg est là.
+    mp3_bytes = wav_to_mp3(wav_bytes)
+    data, suffix = (mp3_bytes, ".mp3") if mp3_bytes else (wav_bytes, ".wav")
 
     AUDIO_DIR.mkdir(parents=True, exist_ok=True)
-    path = AUDIO_DIR / f"{key}.mp3"
-    path.write_bytes(audio_bytes)
+    path = AUDIO_DIR / f"{key}{suffix}"
+    path.write_bytes(data)
 
-    return register_audio(key, theme or "Sans thème", voice, model, path)
+    # Une piste écrite précédemment dans l'autre format ferait doublon.
+    other = AUDIO_DIR / f"{key}{'.wav' if suffix == '.mp3' else '.mp3'}"
+    other.unlink(missing_ok=True)
+
+    return register_audio(
+        key, theme or "Sans thème", voice, model, path, duration_seconds=duration
+    )

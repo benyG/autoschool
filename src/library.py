@@ -47,6 +47,10 @@ def init_db():
             created_at TEXT NOT NULL
         )
     """)
+    # Bases créées avant l'ajout de la durée : on complète sans les recréer.
+    columns = {r[1] for r in con.execute("PRAGMA table_info(audios)")}
+    if "duration_seconds" not in columns:
+        con.execute("ALTER TABLE audios ADD COLUMN duration_seconds REAL")
     con.commit()
     con.close()
 
@@ -160,8 +164,8 @@ def find_audio(audio_hash: str) -> dict | None:
     init_db()
     con = sqlite3.connect(DB_PATH)
     row = con.execute(
-        "SELECT filename, theme, voice, model, size_bytes, created_at FROM audios "
-        "WHERE audio_hash = ?",
+        "SELECT filename, theme, voice, model, size_bytes, created_at, duration_seconds "
+        "FROM audios WHERE audio_hash = ?",
         (audio_hash,),
     ).fetchone()
     con.close()
@@ -177,17 +181,25 @@ def find_audio(audio_hash: str) -> dict | None:
         "model": row[3],
         "size_bytes": row[4],
         "created_at": row[5],
+        "duration_seconds": row[6],
         "hash": audio_hash,
     }
 
 
-def register_audio(audio_hash: str, theme: str, voice: str, model: str, path: Path) -> dict:
+def register_audio(
+    audio_hash: str,
+    theme: str,
+    voice: str,
+    model: str,
+    path: Path,
+    duration_seconds: float | None = None,
+) -> dict:
     init_db()
     con = sqlite3.connect(DB_PATH)
     con.execute(
         "INSERT OR REPLACE INTO audios "
-        "(audio_hash, theme, voice, model, filename, size_bytes, created_at) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+        "(audio_hash, theme, voice, model, filename, size_bytes, created_at, duration_seconds) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
         (
             audio_hash,
             theme,
@@ -196,6 +208,7 @@ def register_audio(audio_hash: str, theme: str, voice: str, model: str, path: Pa
             path.name,
             path.stat().st_size,
             datetime.now().isoformat(timespec="seconds"),
+            duration_seconds,
         ),
     )
     con.commit()
@@ -207,17 +220,15 @@ def list_audios(theme: str | None = None) -> list[dict]:
     """Audios archivés dont le fichier existe encore, du plus récent au plus ancien."""
     init_db()
     con = sqlite3.connect(DB_PATH)
+    columns = (
+        "audio_hash, filename, theme, voice, model, size_bytes, created_at, duration_seconds"
+    )
     if theme:
         rows = con.execute(
-            "SELECT audio_hash, filename, theme, voice, model, size_bytes, created_at "
-            "FROM audios WHERE theme = ? ORDER BY id DESC",
-            (theme,),
+            f"SELECT {columns} FROM audios WHERE theme = ? ORDER BY id DESC", (theme,)
         ).fetchall()
     else:
-        rows = con.execute(
-            "SELECT audio_hash, filename, theme, voice, model, size_bytes, created_at "
-            "FROM audios ORDER BY id DESC"
-        ).fetchall()
+        rows = con.execute(f"SELECT {columns} FROM audios ORDER BY id DESC").fetchall()
     con.close()
 
     result = []
@@ -232,6 +243,7 @@ def list_audios(theme: str | None = None) -> list[dict]:
                 "model": r[4],
                 "size_bytes": r[5],
                 "created_at": r[6],
+                "duration_seconds": r[7],
             })
     return result
 
@@ -254,5 +266,6 @@ def library_stats() -> dict:
     return {
         "audio_count": len(audios),
         "audio_bytes": sum(a["size_bytes"] or 0 for a in audios),
+        "audio_seconds": sum(a.get("duration_seconds") or 0 for a in audios),
         "summary_count": len(list_summaries()),
     }
