@@ -1,0 +1,15 @@
+[server]
+# Écoute sur toutes les interfaces réseau, pas seulement 127.0.0.1 :
+# l'app devient accessible depuis les autres appareils du même Wi-Fi
+# (téléphone, tablette) via l'IP locale de cette machine, sans avoir
+# à repasser --server.address à chaque lancement.
+address = "0.0.0.0"
+port = 8501
+
+# Streamlit tente de joindre un service externe pour deviner l'IP publique
+# de la machine — inutile ici et bruyant sur un réseau restreint.
+headless = true
+
+[browser]
+# N'affiche que l'adresse pertinente pour un usage sur réseau local.
+gatherUsageStats = false
