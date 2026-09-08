@@ -6,9 +6,10 @@
 address = "0.0.0.0"
 port = 8501
 
-# Streamlit tente de joindre un service externe pour deviner l'IP publique
-# de la machine — inutile ici et bruyant sur un réseau restreint.
-headless = true
+# headless=false : Streamlit affiche l'IP locale réelle à saisir sur un
+# autre appareil ("Network URL"). En headless, seule l'adresse d'écoute
+# 0.0.0.0 est affichée — inutilisable telle quelle sur un téléphone.
+headless = false
 
 [browser]
 # N'affiche que l'adresse pertinente pour un usage sur réseau local.
